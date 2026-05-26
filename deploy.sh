@@ -1,66 +1,32 @@
 #!/bin/bash
-# deploy.sh - Deploy machine-config-service to /opt/machine-config on the server
-# This script runs ON the server (not locally)
+# deploy.sh - Auto-deploy script triggered by GitHub webhook
+# Location on server: /opt/machine-config/deploy.sh
 
 set -e
 
+LOG_FILE="/var/log/machine-config-deploy.log"
 PROJECT_DIR="/opt/machine-config"
-REPO_URL="https://github.com/ShubhamRathore12/grain_backend.git"
-SERVICE_PATH="services/machine-config"
 
-echo "=== Machine Config Service - Deployment ==="
+echo "$(date) - Deployment triggered" >> "$LOG_FILE"
 
-# Create project directory if it doesn't exist
-if [ ! -d "$PROJECT_DIR" ]; then
-    echo "📁 Creating project directory..."
-    mkdir -p "$PROJECT_DIR"
-fi
+cd "$PROJECT_DIR"
 
-# If repo not cloned yet, do a sparse checkout of just this service
-if [ ! -d "$PROJECT_DIR/.git" ]; then
-    echo "📥 Cloning repository (sparse checkout)..."
-    cd /opt
-    git clone --filter=blob:none --sparse "$REPO_URL" machine-config
-    cd "$PROJECT_DIR"
-    git sparse-checkout set "$SERVICE_PATH"
-else
-    echo "🔄 Pulling latest changes..."
-    cd "$PROJECT_DIR"
-    git pull origin main
-fi
+# Pull latest code
+echo "$(date) - Pulling latest code..." >> "$LOG_FILE"
+git pull origin main >> "$LOG_FILE" 2>&1
 
-# Navigate to service directory
-cd "$PROJECT_DIR/$SERVICE_PATH"
-
-# Create .env if it doesn't exist
-if [ ! -f .env ]; then
-    echo "📝 Creating .env file..."
-    cat > .env << 'EOF'
-PORT=8080
-MACHINE_CONFIG_ENABLED=true
-EOF
-fi
-
-# Build and deploy
-echo "🐳 Building and deploying Docker container..."
-docker compose up -d --build --force-recreate
+# Rebuild and restart container
+echo "$(date) - Building and restarting container..." >> "$LOG_FILE"
+docker compose up -d --build --force-recreate >> "$LOG_FILE" 2>&1
 
 # Cleanup old images
-docker image prune -f
+docker image prune -f >> "$LOG_FILE" 2>&1
 
-# Verify
-echo "⏳ Waiting for service to start..."
+# Verify health
 sleep 3
-
 if curl -s http://127.0.0.1:8080/api/health | grep -q "ok"; then
-    echo "✅ Machine Config Service is running!"
-    echo "   Health: http://127.0.0.1:8080/api/health"
+    echo "$(date) - ✅ Deployment successful!" >> "$LOG_FILE"
 else
-    echo "❌ Service failed to start. Check logs:"
-    echo "   docker logs machine-config-service --tail 20"
+    echo "$(date) - ❌ Deployment failed! Service not healthy." >> "$LOG_FILE"
     exit 1
 fi
-
-echo ""
-echo "=== Deployment Complete ==="
-echo "Next: Configure nginx to proxy /machine-config/api/* to port 8080"

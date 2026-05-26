@@ -1,0 +1,16 @@
+[Unit]
+Description=Machine Config GitHub Webhook Listener
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/machine-config
+ExecStart=/usr/bin/node /opt/machine-config/webhook-server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
