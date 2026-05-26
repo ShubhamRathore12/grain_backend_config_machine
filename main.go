@@ -13,6 +13,9 @@ import (
 	"machine-config-service/config"
 )
 
+// validAPIKeys holds the set of allowed API keys (loaded from env at startup)
+var validAPIKeys map[string]bool
+
 func main() {
 	// Feature flag: SERVICE_ENABLED controls whether this service starts
 	enabled := os.Getenv("SERVICE_ENABLED")
@@ -20,6 +23,9 @@ func main() {
 		log.Println("⚠️  Machine Config Service is DISABLED via SERVICE_ENABLED flag. Exiting.")
 		os.Exit(0)
 	}
+
+	// Load API keys from environment (comma-separated)
+	loadAPIKeys()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -34,33 +40,89 @@ func main() {
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
 
-	// Get all machines (list with metadata)
-	api.HandleFunc("/machines", getAllMachines).Methods("GET", "OPTIONS")
-
-	// Get single machine full config
-	api.HandleFunc("/machines/{name}", getMachineByName).Methods("GET", "OPTIONS")
-
-	// Get machine config by section
-	api.HandleFunc("/machines/{name}/auto", getMachineAutoConfig).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/auto-grain", getMachineGrainConfig).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/auto-paddy", getMachinePaddyConfig).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/outputs", getMachineOutputs).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/analog", getMachineAnalog).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/tags", getMachineTags).Methods("GET", "OPTIONS")
-	api.HandleFunc("/machines/{name}/menu", getMachineMenu).Methods("GET", "OPTIONS")
-
-	// Health check
+	// Health check - PUBLIC (no auth required)
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 
+	// Protected routes - require API key
+	protected := api.PathPrefix("").Subrouter()
+	protected.Use(apiKeyMiddleware)
+
+	// Get all machines (list with metadata)
+	protected.HandleFunc("/machines", getAllMachines).Methods("GET", "OPTIONS")
+
+	// Get single machine full config
+	protected.HandleFunc("/machines/{name}", getMachineByName).Methods("GET", "OPTIONS")
+
+	// Get machine config by section
+	protected.HandleFunc("/machines/{name}/auto", getMachineAutoConfig).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/auto-grain", getMachineGrainConfig).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/auto-paddy", getMachinePaddyConfig).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/outputs", getMachineOutputs).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/analog", getMachineAnalog).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/tags", getMachineTags).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/machines/{name}/menu", getMachineMenu).Methods("GET", "OPTIONS")
+
 	log.Printf("🚀 Machine Config Service running on port %s", port)
+	log.Printf("🔒 API Key authentication: ENABLED (%d keys loaded)", len(validAPIKeys))
 	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+
+// loadAPIKeys reads API_KEYS from environment (comma-separated list)
+func loadAPIKeys() {
+	validAPIKeys = make(map[string]bool)
+	keysEnv := os.Getenv("API_KEYS")
+	if keysEnv == "" {
+		log.Println("⚠️  WARNING: No API_KEYS set. All protected endpoints will return 401.")
+		return
+	}
+	for _, key := range strings.Split(keysEnv, ",") {
+		k := strings.TrimSpace(key)
+		if k != "" {
+			validAPIKeys[k] = true
+		}
+	}
+}
+
+// apiKeyMiddleware checks for a valid API key in the request
+func apiKeyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow OPTIONS (CORS preflight) without auth
+		if r.Method == "OPTIONS" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Check X-API-Key header first, then ?api_key query param
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			apiKey = r.URL.Query().Get("api_key")
+		}
+
+		if apiKey == "" {
+			respondJSON(w, http.StatusUnauthorized, map[string]string{
+				"error":   "unauthorized",
+				"message": "Missing API key. Provide X-API-Key header or ?api_key query parameter.",
+			})
+			return
+		}
+
+		if !validAPIKeys[apiKey] {
+			respondJSON(w, http.StatusForbidden, map[string]string{
+				"error":   "forbidden",
+				"message": "Invalid API key.",
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
